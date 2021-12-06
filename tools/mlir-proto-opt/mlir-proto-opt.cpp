@@ -59,7 +59,6 @@ int main(int argc, char **argv) {
   llvm::InitLLVM y(argc, argv);
   registerAllPasses();
   ireeLlvmSandboxRegisterPasses();
-  linalg_ext::registerLinalgExtPasses();
   registerTestPasses();
 
   DialectRegistry registry;

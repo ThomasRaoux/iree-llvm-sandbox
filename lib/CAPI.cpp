@@ -9,11 +9,37 @@
 //===----------------------------------------------------------------------===//
 
 #include "CAPI.h"
+#include "Dialects/LinalgExt/LinalgExtDialect.h"
+#include "Dialects/LinalgExt/Passes.h"
 
 #include "Transforms/Passes.h"
+#include "mlir-c/Dialect/Linalg.h"
+#include "mlir/CAPI/IR.h"
+#include "mlir/CAPI/Registration.h"
 
 using namespace mlir;
 
+//===----------------------------------------------------------------------===//
+// Dialect
+//===----------------------------------------------------------------------===//
+
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(LinalgExt, linalg_ext,
+                                      mlir::linalg_ext::LinalgExtDialect)
+
 void ireeLlvmSandboxRegisterPasses() {
   registerRunnersPasses();
+  linalg_ext::registerLinalgExtPasses();
+}
+
+void ireeLlvmSandboxRegisterAll(MlirContext context) {
+  MlirDialectHandle linalgDialect = mlirGetDialectHandle__linalg__();
+  mlirDialectHandleRegisterDialect(linalgDialect, context);
+  MlirDialectHandle linalgExtDialect = mlirGetDialectHandle__linalg_ext__();
+  mlirDialectHandleRegisterDialect(linalgExtDialect, context);
+
+  ireeLlvmSandboxRegisterPasses();
+
+  DialectRegistry registry;
+  linalg_ext::registerTilingInterfaceExternalModels(registry);
+  unwrap(context)->appendDialectRegistry(registry);
 }
