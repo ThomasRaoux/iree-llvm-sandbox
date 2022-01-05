@@ -114,11 +114,87 @@ void PredicateOp::getSuccessorRegions(
     regions.push_back(RegionSuccessor(getResults()));
     return;
   }
-
+  
   // The `truePredicate` (and the future `falsePredicate` region)  will always
   // be executed regardless of the condition since they are not modeling control
   // but data flow.
   regions.push_back(RegionSuccessor(&truePredicateRegion()));
+}
+
+//===----------------------------------------------------------------------===//
+// WarpSingleLaneOp
+//===----------------------------------------------------------------------===//
+
+static void print(OpAsmPrinter &p, WarpSingleLaneOp op) {
+  p << "(" << op.laneid() << ")";
+  if (!op.args().empty())
+    p << " args(" << op.args() << " : " << op.args().getTypes() << ")";
+  if (!op.results().empty()) p << " -> (" << op.results().getTypes() << ')';
+  p.printRegion(op.getRegion(),
+                /*printEntryBlockArgs=*/true,
+                /*printBlockTerminators=*/!op.results().empty());
+  p.printOptionalAttrDict(op->getAttrs());
+}
+
+static ParseResult parseWarpSingleLaneOp(OpAsmParser &parser, OperationState &result) {
+  // Create the region.
+  result.regions.reserve(1);
+  Region *warpRegion = result.addRegion();
+
+  auto &builder = parser.getBuilder();
+  OpAsmParser::OperandType laneId;
+
+  // Parse predicate operand.
+  if (parser.parseLParen() || parser.parseRegionArgument(laneId) ||
+      parser.parseRParen())
+    return failure();
+
+  if (parser.resolveOperand(laneId, builder.getIndexType(), result.operands))
+    return failure();
+
+  llvm::SMLoc inputsOperandsLoc;
+  SmallVector<OpAsmParser::OperandType> inputsOperands;
+  SmallVector<Type> inputTypes;
+  if (succeeded(parser.parseOptionalKeyword("args"))) {
+    if (parser.parseLParen()) return failure();
+
+    inputsOperandsLoc = parser.getCurrentLocation();
+    if (parser.parseOperandList(inputsOperands) ||
+        parser.parseColonTypeList(inputTypes) || parser.parseRParen())
+      return failure();
+  }
+  if (parser.resolveOperands(inputsOperands, inputTypes, inputsOperandsLoc,
+                             result.operands))
+    return failure();
+
+  // Parse optional results type list.
+  if (parser.parseOptionalArrowTypeList(result.types)) return failure();
+  // Parse the 'truePredicate' region.
+  if (parser.parseRegion(*warpRegion, /*arguments=*/{},
+                         /*argTypes=*/{}))
+    return failure();
+  WarpSingleLaneOp::ensureTerminator(*warpRegion, builder, result.location);
+
+  // Parse the optional attribute list.
+  if (parser.parseOptionalAttrDict(result.attributes)) return failure();
+  return success();
+}
+
+/// Given the region at `index`, or the parent operation if `index` is None,
+/// return the successor regions. These are the regions that may be selected
+/// during the flow of control. `operands` is a set of optional attributes that
+/// correspond to a constant value for each operand, or null if that operand is
+/// not a constant.
+void WarpSingleLaneOp::getSuccessorRegions(
+    Optional<unsigned> index, ArrayRef<Attribute> operands,
+    SmallVectorImpl<RegionSuccessor> &regions) {
+  if (index.hasValue()) {
+    regions.push_back(RegionSuccessor(getResults()));
+    return;
+  }
+
+  // The warp region is always executed
+  regions.push_back(RegionSuccessor(&warpRegion()));
 }
 
 #define GET_OP_CLASSES

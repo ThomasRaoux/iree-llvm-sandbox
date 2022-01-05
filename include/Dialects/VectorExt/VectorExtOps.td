@@ -59,4 +59,44 @@ def VectorExt_YieldOp : VectorExt_Op<"yield", [
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 }
 
+def VectorExt_WarpSingleLaneOp : VectorExt_Op<"warp_single_lane",
+      [DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+       SingleBlockImplicitTerminator<"vector_ext::YieldOp">,
+       RecursiveSideEffects]> {
+  let summary = "vector.warp_single_lane operation";
+  let description = [{
+    Operation that encapsulate code that should be ran on a single lane within a
+    warp.
+
+    This may be lowered to an scf.if region as below:
+    ```
+      %cnd = arith.cmpi eq, %threadid, %c0 : index
+      scf.if %cnd {
+
+      }
+    ```
+    Operands are vector values distributed on all threads of the warp. The
+    matching region argument is a vector of all the values of those threads
+    available to the single active lane.
+
+    Return values are distributed on all threads using laneId as index. The
+    vector is distributed based on the shape ratio between the vector type of
+    the yield and the result type.
+    If the shapes are the same this means the value is broadcasted to all lanes.
+    In the future the distribution can be made more explicit using affine_maps.
+  }];
+
+  let arguments = (ins Index:$laneid, Variadic<AnyType>:$args);
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$warpRegion);
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "Value":$laneid)>,
+    OpBuilder<(ins "TypeRange":$resultTypes, "Value":$laneid,
+     CArg<"function_ref<void(OpBuilder &, Location)>",
+          "buildTerminatedBody">:$warpBuilder)>
+  ];
+}
+
 #endif // DIALECTS_VECTOREXT_VECTOREXTOPS
