@@ -93,9 +93,7 @@ def VectorExt_WarpSingleLaneOp : VectorExt_Op<"warp_single_lane",
   let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "Value":$laneid)>,
-    OpBuilder<(ins "TypeRange":$resultTypes, "Value":$laneid,
-     CArg<"function_ref<void(OpBuilder &, Location)>",
-          "buildTerminatedBody">:$warpBuilder)>
+    OpBuilder<(ins "TypeRange":$resultTypes, "Value":$laneid)>
   ];
 }
 

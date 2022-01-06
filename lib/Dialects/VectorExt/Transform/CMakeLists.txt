@@ -1,5 +1,6 @@
 add_mlir_library(MLIRVectorExtTransform
   VectorMaskingUtils.cpp
+  VectorWarpUtils.cpp
   VisitorUtils.cpp
 
   DEPENDS

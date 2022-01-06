@@ -197,6 +197,22 @@ void WarpSingleLaneOp::getSuccessorRegions(
   regions.push_back(RegionSuccessor(&warpRegion()));
 }
 
+void WarpSingleLaneOp::build(OpBuilder &builder, OperationState &result,
+                             Value laneId) {
+  build(builder, result, /*resultTypes=*/llvm::None, laneId);
+}
+
+void WarpSingleLaneOp::build(
+    OpBuilder &builder, OperationState &result, TypeRange resultTypes,
+    Value laneId) {
+  result.addOperands(laneId);
+  result.addTypes(resultTypes);
+
+  OpBuilder::InsertionGuard guard(builder);
+  Region *warpRegion = result.addRegion();
+  builder.createBlock(warpRegion);
+}
+
 #define GET_OP_CLASSES
 #include "Dialects/VectorExt/VectorExtOps.cpp.inc"
 
