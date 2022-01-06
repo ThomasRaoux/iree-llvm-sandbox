@@ -9,6 +9,7 @@
 #include "Dialects/VectorExt/VectorExtOps.h"
 #include "Dialects/VectorExt/VectorExtWarpUtils.h"
 #include "mlir/Dialect/Vector/VectorOps.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
 
@@ -40,6 +41,13 @@ struct TestVectorWarp : public PassWrapper<TestVectorWarp, FunctionPass> {
         break;
       }
     }
+    llvm::errs() << " ----- first step\n";
+    funcOp.dump();
+    llvm::errs() << " ----- second step\n";
+    MLIRContext *ctx = &getContext();
+    RewritePatternSet patterns(ctx);
+    vector_ext::populatePropagateVectorDistributionPatterns(patterns);
+    (void)applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
   }
 };
 

@@ -12,14 +12,8 @@
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
-class FuncOp;
-class LogicalResult;
-class Region;
 class OpBuilder;
-class Operation;
-class Value;
-
-
+class RewritePatternSet;
 
 namespace vector_ext {
 // TODO: Move this as op attribute
@@ -30,7 +24,10 @@ class WarpSingleLaneOp;
 // TODO: Add options on how to distribute.
 void distributeTransferWrite(OpBuilder &builder, WarpSingleLaneOp op);
 
+
+void populatePropagateVectorDistributionPatterns(RewritePatternSet &pattern);
+
 } // namespace vector_ext
 } // namespace mlir
 
-#endif // DIALECT_VECTOREXT_VECTORMASKINGUTILS_H_
+#endif // DIALECT_VECTOREXT_VECTORWARPUTILS_H_

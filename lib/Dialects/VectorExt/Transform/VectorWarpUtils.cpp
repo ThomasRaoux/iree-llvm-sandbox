@@ -18,7 +18,18 @@ using namespace mlir;
 using namespace mlir::vector;
 using namespace mlir::vector_ext;
 
-static WarpSingleLaneOp cloneWithNewYields(OpBuilder &b,
+// Clones `op` into a new operations that takes `operands` and returns
+// `resultTypes`.
+static Operation *cloneOpWithOperandsAndTypes(OpBuilder &builder, Location loc,
+                                              Operation *op,
+                                              ArrayRef<Value> operands,
+                                              ArrayRef<Type> resultTypes) {
+  OperationState res(loc, op->getName().getStringRef(), operands, resultTypes,
+                     op->getAttrs());
+  return builder.createOperation(res);
+}
+
+static WarpSingleLaneOp moveRegionToNewWarp(OpBuilder &b,
                                            WarpSingleLaneOp warpOp,
                                            ValueRange newYieldedValues,
                                            TypeRange newReturnTypes,
@@ -26,11 +37,14 @@ static WarpSingleLaneOp cloneWithNewYields(OpBuilder &b,
   // Create a new op before the existing one, with the extra operands.
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(warpOp);
-  //auto operands = llvm::to_vector<4>(op.args());
-  auto newWarpOp = b.create<WarpSingleLaneOp>(warpOp.getLoc(), newReturnTypes,
-                                              warpOp.laneid());
+  SmallVector<Type> types(warpOp.getResultTypes().begin(),
+                          warpOp.getResultTypes().end());
+  types.append(newReturnTypes.begin(), newReturnTypes.end());
+  // auto operands = llvm::to_vector<4>(op.args());
+  auto newWarpOp =
+      b.create<WarpSingleLaneOp>(warpOp.getLoc(), types, warpOp.laneid());
 
-  Region& opBody = warpOp.getBodyRegion();
+  Region &opBody = warpOp.getBodyRegion();
   Region& newOpBody = newWarpOp.getBodyRegion();
   newOpBody.takeBody(opBody);
   auto yield =
@@ -65,6 +79,8 @@ void mlir::vector_ext::distributeTransferWrite(OpBuilder &builder,
     if (op.hasTrait<OpTrait::HasRecursiveSideEffects>())
       return;
   }
+  if(!writeOp)
+    return;
   // TODO: Add a callback to determine the target shape. For now we just
   // distribute along the most inner dimension.
   SmallVector<int64_t> targetShape(writeOp.getVectorType().getShape().begin(),
@@ -75,7 +91,7 @@ void mlir::vector_ext::distributeTransferWrite(OpBuilder &builder,
   SmallVector<Value> yieldValues = { writeOp.vector() };
   SmallVector<Type> retTypes = { targeType };
   WarpSingleLaneOp newWarpOp =
-      cloneWithNewYields(builder, op, yieldValues, retTypes, true);
+      moveRegionToNewWarp(builder, op, yieldValues, retTypes, true);
   writeOp->moveAfter(newWarpOp);
   OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(writeOp);
@@ -109,4 +125,69 @@ void mlir::vector_ext::distributeTransferWrite(OpBuilder &builder,
   writeOp.vectorMutable().assign(newWarpOp.getResults().back());
   writeOp.indicesMutable().assign(indices);
   op->erase();
+}
+
+struct WarpOpElementwise : public OpRewritePattern<WarpSingleLaneOp> {
+  using OpRewritePattern<WarpSingleLaneOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(WarpSingleLaneOp warpOp,
+                                PatternRewriter &rewriter) const override {
+    auto yield = cast<vector_ext::YieldOp>(
+        warpOp.getBodyRegion().getBlocks().begin()->getTerminator());
+    llvm::Optional<unsigned> index;
+    for (OpOperand& yieldOperand : yield->getOpOperands()) {
+      Value yieldValue = yieldOperand.get();
+      Operation *definedOp = yieldValue.getDefiningOp();
+      if (definedOp &&
+          OpTrait::hasElementwiseMappableTraits(definedOp)) {
+        // TODO: The value may have several use in the YieldOp. We should handle
+        // it.
+        if (definedOp->hasOneUse() &&
+            !warpOp.getResult(yieldOperand.getOperandNumber()).use_empty()) {
+          index = yieldOperand.getOperandNumber();
+          break;
+        }
+      }
+    }
+    if(!index)
+      return failure();
+
+    Operation *elementWise = yield.getOperand(*index).getDefiningOp();
+    Value distributedVal = warpOp.getResult(*index);
+    SmallVector<Value> yieldValues;
+    SmallVector<Type> retTypes;
+    SmallVector<unsigned> operandForwarded;
+    for (OpOperand &operand : elementWise->getOpOperands()) {
+      if(!warpOp.getBodyRegion().isAncestor(operand.get().getParentRegion()))
+        continue;
+      auto targetType = VectorType::get(
+          distributedVal.getType().cast<VectorType>().getShape(),
+          operand.get().getType().cast<VectorType>().getElementType());
+      operandForwarded.push_back(operand.getOperandNumber());
+      yieldValues.push_back(operand.get());
+      retTypes.push_back(targetType);
+    }
+    WarpSingleLaneOp newWarpOp =
+        moveRegionToNewWarp(rewriter, warpOp, yieldValues, retTypes, false);
+    SmallVector<Value> newOperands(elementWise->getOperands().begin(),
+                                   elementWise->getOperands().end());
+    for (unsigned i : operandForwarded) {
+      newOperands[i] = newWarpOp.getResult(i + warpOp.getNumResults());
+    }
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPointAfter(newWarpOp);
+    Operation *newOp = cloneOpWithOperandsAndTypes(
+        rewriter, warpOp.getLoc(), elementWise, newOperands,
+        {warpOp.getResult(*index).getType()});
+    SmallVector<Value> results(newWarpOp.getResults().begin(),
+                               newWarpOp.getResults().end());
+    results[*index] = newOp->getResult(0);
+    results.resize(warpOp.getNumResults());
+    rewriter.replaceOp(warpOp, results);
+    return success();
+  }
+};
+
+void mlir::vector_ext::populatePropagateVectorDistributionPatterns(
+    RewritePatternSet &pattern) {
+  pattern.add<WarpOpElementwise>(pattern.getContext());
 }
