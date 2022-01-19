@@ -32,12 +32,34 @@ struct TestVectorWarp : public PassWrapper<TestVectorWarp, FunctionPass> {
     registry.insert<VectorDialect, VectorExtDialect>();
   }
 
+  Option<bool> distributeTransferWriteOps{
+      *this, "distribute-transfer-write",
+      llvm::cl::desc("Test distribution of transfer write"),
+      llvm::cl::init(false)};
+
+  Option<bool> hoistUniform{
+      *this, "hoist-uniform",
+      llvm::cl::desc("Test hoist uniform"),
+      llvm::cl::init(false)};
+
   Option<bool> propagateDistribution{
       *this, "propagate-distribution",
       llvm::cl::desc("Test distribution propgation"), llvm::cl::init(false)};
 
   void runOnFunction() override {
     FuncOp funcOp = getFunction();
+    funcOp.walk([&](Operation * op) {
+      if (auto warpOp = dyn_cast<WarpSingleLaneOp>(op)) {
+        if (hoistUniform) {
+          moveScalarUniformCode(warpOp);
+        }
+        if (distributeTransferWriteOps) {
+          OpBuilder builder(op->getContext());
+          distributeTransferWrite(builder, warpOp);
+        }
+        WalkResult::interrupt();
+      }
+    });
     MLIRContext *ctx = &getContext();
     if (propagateDistribution) {
       RewritePatternSet patterns(ctx);

@@ -19,6 +19,12 @@ namespace vector_ext {
 /// Collect patterns to propagate warp distribution.
 void populatePropagateVectorDistributionPatterns(RewritePatternSet &pattern);
 
+/// Distribute transfer_write ops out of 
+// TODO: Add options on how to distribute.
+void distributeTransferWrite(OpBuilder &builder, WarpSingleLaneOp op);
+
+void moveScalarUniformCode(WarpSingleLaneOp op);
+
 } // namespace vector_ext
 } // namespace mlir
 

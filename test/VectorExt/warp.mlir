@@ -50,7 +50,6 @@ func @warp_propagate_elementwise(%laneid: index, %dest: memref<1024xf32>) {
   return
 }
 
-
 // -----
 
 #map0 = affine_map<()[s0] -> (s0 * 2)>
