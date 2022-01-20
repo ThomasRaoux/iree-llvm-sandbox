@@ -13,11 +13,22 @@
 
 namespace mlir {
 class RewritePatternSet;
-
+namespace vector {
+class TransferWriteOp;
+}
 namespace vector_ext {
 
 /// Collect patterns to propagate warp distribution.
 void populatePropagateVectorDistributionPatterns(RewritePatternSet &pattern);
+
+/// Distribute transfer_write ops based on the affine map returs by
+/// `distributionMapFn`.
+void distributeTransferWrite(
+    OpBuilder &builder, WarpSingleLaneOp op,
+    std::function<AffineMap(vector::TransferWriteOp)> distributionMapFn);
+
+/// Move scalar operations with no dependency on warp op outside of the region.
+void moveScalarUniformCode(WarpSingleLaneOp op);
 
 } // namespace vector_ext
 } // namespace mlir
