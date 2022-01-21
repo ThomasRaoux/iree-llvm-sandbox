@@ -19,7 +19,7 @@ def parse_arguments():
   parser.add_argument(
       "--target",
       help="Semicolumn-separated list of targets to build with LLVM",
-      default="X86")
+      default="X86;NVPTX")
   parser.add_argument("--build-dir",
                       help="Build directory",
                       type=str,
@@ -64,6 +64,13 @@ def parse_arguments():
       help="Use the default system compiler" +
       "\n[warning] Setting to false seems to trigger spurious rebuilds",
       dest="enable_system_cc",
+      default=False,
+      action=argparse.BooleanOptionalAction,
+  )
+  parser.add_argument(
+      "--cuda-runner",
+      help="Build cuda runner library",
+      dest="cuda_runner",
       default=False,
       action=argparse.BooleanOptionalAction,
   )
@@ -173,7 +180,8 @@ def main(args):
       llvm_configure_args.append("-DLLVM_CCACHE_BUILD=ON")
     else:
       print("WARNING: Project developers use ccache which is not installed")
-
+  if args.cuda_runner:
+    llvm_configure_args.append("-DMLIR_ENABLE_CUDA_RUNNER=ON")
   # CMake configure.
   build_dir = os.path.abspath(args.build_dir)
   build_mode = args.build_mode
@@ -213,6 +221,9 @@ def main(args):
                 "tools/sandbox/all", "mlir-opt", "mlir-translate", \
                 "mlir-cpu-runner", "mlir_runner_utils", "mlir_c_runner_utils", \
                 "llvm-mca", "llvm-objdump", "llc", "opt", "FileCheck"]
+
+  if args.cuda_runner:
+    cmake_args.append("mlir_cuda_runtime")
   print(f"-- Performing initial build: {' '.join(cmake_args)}")
   subprocess.check_call(cmake_args, cwd=build_dir)
 
