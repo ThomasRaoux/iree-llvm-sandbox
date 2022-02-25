@@ -43,8 +43,9 @@ moveRegionToNewWarpOpAndReplaceReturns(OpBuilder &b, WarpSingleLaneOp warpOp,
   // Create a new op before the existing one, with the extra operands.
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(warpOp);
-  auto newWarpOp = b.create<WarpSingleLaneOp>(warpOp.getLoc(), newReturnTypes,
-                                              warpOp.laneid());
+  auto newWarpOp = b.create<WarpSingleLaneOp>(
+      warpOp.getLoc(), newReturnTypes, warpOp.laneid(), warpOp.args(),
+      warpOp.getBody()->getArgumentTypes());
 
   Region &opBody = warpOp.getBodyRegion();
   Region &newOpBody = newWarpOp.getBodyRegion();
@@ -354,6 +355,39 @@ struct WarpOpDeadResult : public OpRewritePattern<WarpSingleLaneOp> {
   }
 };
 
+// If an operand is directly yielded out of the region we can forward it
+// directly and it doesn't need to go through the region.
+struct WarpOpForwardOperand : public OpRewritePattern<WarpSingleLaneOp> {
+  using OpRewritePattern<WarpSingleLaneOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(WarpSingleLaneOp warpOp,
+                                PatternRewriter &rewriter) const override {                      
+    SmallVector<Type> resultTypes;
+    SmallVector<Value> yieldValues;
+    auto yield = cast<vector_ext::YieldOp>(
+        warpOp.getBodyRegion().getBlocks().begin()->getTerminator());
+    BlockArgument argForwarded;
+    unsigned resultIndex;
+    for (OpOperand& operand : yield->getOpOperands()) {
+      auto arg = operand.get().dyn_cast<BlockArgument>();
+      if (!arg || arg.getOwner()->getParentOp() != warpOp.getOperation())
+        continue;
+      if(warpOp.getResult(operand.getOperandNumber()).use_empty())
+        continue;
+      if (warpOp.getResult(operand.getOperandNumber()).getType() !=
+          warpOp.args()[arg.getArgNumber()].getType())
+        continue;
+      argForwarded = arg;
+      resultIndex = operand.getOperandNumber();
+      break;
+    }
+    if (!argForwarded)
+      return failure();
+    warpOp.getResult(resultIndex)
+        .replaceAllUsesWith(warpOp.args()[argForwarded.getArgNumber()]);
+    return success();
+  }
+};
+
 } // namespace
 
 /// Helper to figure out if an op has side effects or recursive side-effects.
@@ -437,10 +471,74 @@ void mlir::vector_ext::distributeTransferWrite(
   }
 }
 
+
+struct WarpOpScfForOp : public OpRewritePattern<WarpSingleLaneOp> {
+  using OpRewritePattern<WarpSingleLaneOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(WarpSingleLaneOp warpOp,
+                                PatternRewriter &rewriter) const override {
+    auto yield = cast<vector_ext::YieldOp>(
+      warpOp.getBodyRegion().getBlocks().begin()->getTerminator());
+    // Only pick up forOp if it is the last op in the region.
+    Operation* lastNode = yield->getPrevNode();
+    auto forOp = dyn_cast_or_null<scf::ForOp>(lastNode);
+    if(!forOp)
+      return failure();
+    SmallVector<Value> newOperands;
+    SmallVector<unsigned> resultIdx;
+    // Collect all the outputs coming from the forOp.
+    for (OpOperand &yieldOperand : yield->getOpOperands()) {
+      if(yieldOperand.get().getDefiningOp() != forOp.getOperation())
+        continue;
+      newOperands.push_back(warpOp.getResult(yieldOperand.getOperandNumber()));
+      yieldOperand.set(
+          forOp.getIterOperands()[yieldOperand.getOperandNumber()]);
+      resultIdx.push_back(yieldOperand.getOperandNumber());
+    }
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPointAfter(warpOp);
+    // Create a new for op outside the region with a WarpSingleOp region inside.
+    auto newForOp = rewriter.create<scf::ForOp>(
+        forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
+        forOp.getStep(), newOperands);
+    rewriter.setInsertionPoint(newForOp.getBody(), newForOp.getBody()->begin());
+    auto innerWarp = rewriter.create<WarpSingleLaneOp>(
+        warpOp.getLoc(), newForOp.getResultTypes(), warpOp.laneid(),
+        newForOp.getRegionIterArgs(), forOp.getResultTypes());
+    // Move the loop region within the new WarpSingleLaneOp region.
+    BlockAndValueMapping mapping;
+    mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
+    for (auto args : llvm::zip(forOp.getRegionIterArgs(),
+                               innerWarp.getBody()->getArguments())) {
+      mapping.map(std::get<0>(args), std::get<1>(args));
+    }
+    rewriter.setInsertionPoint(innerWarp.getBody(),
+                               innerWarp.getBody()->begin());
+    for(Operation& innerOp : forOp.getBody()->without_terminator())
+      rewriter.clone(innerOp, mapping);
+    SmallVector<Value> yieldOperands;
+    for(Value operand : forOp.getBody()->getTerminator()->getOperands())
+      yieldOperands.push_back(mapping.lookup(operand));
+    rewriter.create<vector_ext::YieldOp>(innerWarp.getLoc(), yieldOperands);
+    rewriter.setInsertionPointAfter(innerWarp);
+    rewriter.create<scf::YieldOp>(forOp.getLoc(),innerWarp.getResults());
+    // remove the old forOp.
+    forOp.getBody()->dropAllDefinedValueUses();
+    rewriter.eraseOp(forOp);
+    // Replace the warpOp result coming from the original ForOp.
+    for(auto res : llvm::enumerate(resultIdx)) {
+      warpOp.getResult(res.value())
+          .replaceAllUsesWith(newForOp.getResult(res.index()));
+      newForOp->setOperand(res.index()+3, warpOp.getResult(res.value()));
+    }
+    return success();
+  }
+};
+
 void mlir::vector_ext::populatePropagateVectorDistributionPatterns(
     RewritePatternSet &pattern) {
   pattern.add<WarpOpElementwise, WarpOpTransferRead, WarpOpDeadResult,
-              WarpOpReduction>(pattern.getContext());
+              WarpOpReduction, WarpOpScfForOp, WarpOpForwardOperand>(
+      pattern.getContext());
 }
 
 static LogicalResult rewriteWarpOpToScfFor(

@@ -219,12 +219,22 @@ void WarpSingleLaneOp::build(OpBuilder &builder, OperationState &result,
 
 void WarpSingleLaneOp::build(OpBuilder &builder, OperationState &result,
                              TypeRange resultTypes, Value laneId) {
+  build(builder, result, resultTypes, laneId,
+        /*operands=*/llvm::None, /*argTypes=*/llvm::None);
+}
+
+void WarpSingleLaneOp::build(OpBuilder &builder, OperationState &result,
+                             TypeRange resultTypes, Value laneId,
+                             ValueRange operands, TypeRange argTypes) {
   result.addOperands(laneId);
   result.addTypes(resultTypes);
-
+  result.addOperands(operands);
+  assert(operands.size() == argTypes.size());
   OpBuilder::InsertionGuard guard(builder);
   Region *warpRegion = result.addRegion();
-  builder.createBlock(warpRegion);
+  Block* block = builder.createBlock(warpRegion);
+  for (Type t : argTypes)
+    block->addArgument(t, operands[0].getLoc());
 }
 
 #define GET_OP_CLASSES
